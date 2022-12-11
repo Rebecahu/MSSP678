@@ -1,0 +1,457 @@
+---
+title: "678 Midterm Project- Breast Cancer Survival Duration"
+author: "Runci Hu"
+date: "2022-12-04"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(ggplot2)
+library(knitr)
+library(data.table)
+library(gridExtra)
+library(stringr)
+library(rstan)
+library(rstanarm)
+library(tidyverse)
+library(reshape)
+library(dplyr)
+library(PerformanceAnalytics)
+library(lmerTest)
+library(merTools)
+library(lattice)
+library(ggpubr)
+```
+
+## Abstract
+This report is regarding the survival duration of breast cancer and the factors affecting it. Breast cancer is now the most commonly diagnosed cancer in women. When diagnosed with breast cancer, the most important part of the clinical decision for patients is the accurate estimation of prognosis and survival duration. So, my aim for this research is to determine what factors primarily affect one’s survival time. To achieve my goal, I build a multilevel model of total survival month in two groups, integrative clusters and the Nottingham prognostic index. The result shows that components like age, tumor size, and cohort all significantly influence the result. The report will expand detail into four parts, Information, Method, Result, and Discussion. 
+<br>
+<br>
+
+## Introduction 
+Breast cancer is now the most common cancer in women and the second leading cause of cancer death in women. In 2020, an estimated of over 680000 women across the world died from breast cancer. This year American, it is predicted that 43,780 deaths from breast cancer will occur. To be in my shoes, I have a matrilineal relative diagnosed with breast cancer, which increases the genetic risk score of myself diagnosed with cancer. These are the reason why I choose this topic.
+Moreover, cancers are associated with genetic abnormalities. Comparing the genes expressed in normal and diseased tissue can be a good way. During my research, I find BRCA1 and BRCA2 (BReast CAncer susceptibility gene) are two genes with high relation to breast cancer. Their mutations highly increase one’s prevalence rate of having breast cancer. Beyond this, I can assume other relative factors. For example, one’s age relates to survival time in high possibility because higher age means more body degeneration. Additionally, the distinctive subtypes of breast cancer show different clinical features. 
+Based on the above discussion, I decided to exploit the multilevel model to discover the impacts of random and fixed effects.
+<br>
+<br>
+
+## Model
+<br>
+
+### Data Preprocessing
+```{r include=FALSE}
+data<- read.csv(file = "METABRIC_RNA_Mutation.csv")
+bc <- data[,c(1:33)]
+bc<- bc %>%
+  mutate_all( ~ na_if(., '')) %>%
+  na.omit(bc)
+
+bc[,2]<- round(bc[,2], digits = 0)
+bc[,22]<- round(bc[,22], digits = 0)
+bc[,24]<- round(bc[,24], digits = 0)
+
+bc <- bc[,-c(4, 8, 10, 13, 15, 23, 28)]
+```
+
+```{r include=FALSE}
+bc <- bc %>% mutate(er_status=case_when(
+    er_status=="Positive" ~ 1,
+    er_status=="Negative" ~ 0
+      )) %>% 
+  mutate(her2_status=case_when(
+    her2_status=="Positive" ~ 1,
+    her2_status=="Negative" ~ 0
+      )) %>%
+  mutate(pr_status=case_when(
+    pr_status=="Positive" ~ 1,
+    pr_status=="Negative" ~ 0
+      )) %>% 
+  mutate(primary_tumor_laterality=case_when(
+    primary_tumor_laterality=="Left" ~ 1,
+    primary_tumor_laterality=="Right" ~ 2
+      )) %>% 
+  mutate(inferred_menopausal_state=case_when(
+    inferred_menopausal_state=="Pre" ~ 0,
+    inferred_menopausal_state=="Post" ~ 1
+      ))
+```
+I found the dataset “Breast Cancer Gene Expression Profiles (METABRIC)” in Kaggle (https://www.kaggle.com/datasets/raghadalharbi/breast-cancer-gene-expression-profiles-metabric). This data from METABRIC (The Molecular Taxonomy of Breast Cancer International Consortium) contains targeted sequencing data of 1,980 primary breast cancer samples. The original dataset has 693 columns, about the different mRNA levels z-score, and mutation for a large number of genes after column 31. I only include two that I mentioned as symbolic, BRCA1 and BRCA2. The new dataset is named “bc”.
+<br>
+In addition, I deleted ‘NA’ data in the bc dataset. Because these missing variables may influent my model. From the rest of the numeric variables, I round them to integer. It is efficient in calculation. I also remove some meaningless columns or unusable columns. Plus, I changed alternative variables, such as positive or negative and left or right, to binary factors (0 or 1) so that these variables could be used for analysis. 
+<br>
+There is a table for the remaining variables and their definitions. 
+
+| column names                  | explanation                                  |
+| :--:                          | :-----                                       |
+| patient_id                    | Patient ID, represent different patient      |
+| age_at_diagnosis              | Age of the patient at diagnosis time         |
+| type_of_breast_surgery        | 2 types of breast cancer surgery             |
+| cancer_type                   | 1. Breast Cancer or 2. Breast Sarcoma        |
+| cancer_type_detailed          | 5 types of detailed Breast cancer types      |
+| cellularity                   |The amount of tumor cells in the specimen     |
+| chemotherapy                  | Whether or not the patient had chemotherapy  |
+| cohort                        | Groups  share a defining characteristic      |
+| er_status                     | Positive or negative for estrogen receptors  |
+| neoplasm_histologic_grade     | Aggressive level of nature of the cells      |
+| her2_status                   | Positive or negative for HER2                |
+| hormone_therapy               | Whether or not the patient had hormonal therapy|
+| inferred_menopausal_state     | Patient is pre menopausal or post menopausal |
+| integrative_cluster           | Molecular subtype ('4ER+', '3', '9', '7', 
+                                  '4ER-', '5', '8', '10', '1', '2', '6')       |
+| primary_tumor_laterality      | Cancer on right breast or the left breast    |
+| lymph_nodes_examined_positive | Whether lymph node involved by the cancer    |
+| mutation_count                | Number of gene that has relevant mutations   |
+| nottingham_prognostic_index   | A calculation determines prognosis following                                        surgery for breast cancer                    |
+| overall_survival_months       | Survival Duration from intervention to death |
+| overall_survival              | Whether the patient is alive of dead         |
+| pr_status                     | Positive or negative for progesterone receptor|
+| radio_therapy                 | Whether or not the patient had radio therapy |
+| tumor_size                    | Tumor size                                   |
+| tumor_stage                   | Stage of the cancer                          |
+| death_from_cancer             | Wether the patient's death was due to cancer |
+| brca1                         | BReast CAncer gene 1                         |
+| brca2                         | BReast CAncer gene 2                         |
+
+<br>
+The two groups of random effects I set up are nottingham_prognostic_index and integrative_cluster. In my research, Nottingham Prognostic Index is used to determine the prognosis following surgery for breast cancer. It is calculated by tumor size, the number of involved lymph nodes, and the grade of the tumor. More importantly, it is used to determine one's 5-year survival probability. NPI between 2 to 2.4 has a 93% chance of surviving five years. NPI in 2.4 to 3.4, 3.4 to 5.4, and over 5.4 correspond respectively to 85%, 70%, and 50% probability. When I group the bc data, there is no NPI variable between the 2.4-3 group and the 5-5.4 group. So, I rounded them to an integer with no bias in grouping them. Another random effect is integrative_cluster. It is about 11 different types of Molecular subtypes of breast cancer. The 11 groups are '4ER+', '3', '9', '7', '4ER-', '5', '8', '10', '1', '2', and '6'. 
+<br>
+
+\newpage
+
+### Check Correlations 
+```{r echo=FALSE, warning=FALSE, fig.height=4, fig.width=10, fig.fullwidth=TRUE, fig.cap='Correlation Plots'}
+
+r <- cor(bc[,c(2, 6:12, 14:23, 25:26)], use="complete.obs")
+pacman::p_load(ggcorrplot)
+ggcorrplot(r)
+
+chart.Correlation(bc[, c(2, 6:12, 14:16, 18:23, 25:26)], 
+                        histogram=TRUE, pch=20)
+```
+I first deliberate correlation between my y, overall survival month, with different x variables. Based on the upper graph,  overall survival month has nearly 0 relations with primary tumor laterality, radio therapy, and brca2. As a result, I am not considering these variables in my model. 
+<br>
+Moreover, in the bottom plot, I compare the correlation between different x variables, with a setup of 0.5 as the criteria. Age/inferred menopausal state is highly correlated because menopausal transition most often begins between ages 45 and 55. The menopausal state is closely related to women's age. Hence, I decide to keep age but delete inferred menopausal state. Pr status/er-status also has a higher correlation than 0.5. Based on the above plots of their relations to the groups, I choose to drop er-status. Another high correlation group is tumor size/tumor stage. I am indecisive about these two, so I try both in my function. The final decision is to keep tumor size. 
+<br>
+Above all, I drop primary tumor laterality, radio therapy, brca2, er-status, inferred menopausal state, tumor stage.
+<br>
+
+### Compare one variable to two subsets
+```{r echo=FALSE, results='hide', fig.height=4, fig.width=10, fig.cap='Copare rumor_size with 2 groups'}
+r1 <- ggplot(data=bc , aes(x=tumor_size,y=overall_survival_months)) +
+  geom_point() +
+  stat_smooth(method="lm", fullrange=TRUE) +
+  xlab("tumor_size") + ylab("overall_survival_months") + 
+  facet_wrap(~nottingham_prognostic_index) 
+r2 <- ggplot(data=bc , aes(x=tumor_size,y=overall_survival_months)) +
+  geom_point() +
+  stat_smooth(method="lm", fullrange=TRUE) +
+  xlab("tumor_size") + ylab("overall_survival_months") + 
+  facet_wrap( ~integrative_cluster) 
+ 
+ggarrange(r1, r2, labels = c("NPI", "Cluster"), ncol = 2, nrow = 1)
+```
+Figure 1 plots tumor size associations for two subsets, NPI and integrative cluster, of each group in it. The overall relation between tumor size and overall survival month is negative, in which one’s survival month is shorter than others with smaller tumor sizes. On the other hand, in each group, the slope of tumor size is quite different from others. I can describe group differences in two subsets and then determine if those differences are related to differences in overall survival time.
+<br>
+
+### Group fixed effects
+
+```{r echo=FALSE, fig.height=4, fig.width=10, fig.cap='Relation between overall_survival_months with her2-status in 2 groups'}
+month_her_NPI <- bc %>%
+  ggplot + aes(x=her2_status, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-her2_statuss/NPI", x = "her2_status", y= "survival_months")
+
+month_her_cluster <- bc %>%
+  ggplot + aes(x=her2_status, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-her2_status/cluster", x = "her2_status", y= "survival")
+
+ggarrange(month_her_NPI, month_her_cluster, 
+          labels = c("NPI", "Cluster"), 
+          ncol = 2, nrow = 1, 
+          legend = "bottom")
+```
+
+
+
+```{r echo=FALSE, fig.height=4, fig.width=10, fig.cap='Relation between overall_survival_months with hormone therapy in 2 groups'}
+month_hormone_therapy_NPI <- bc %>%
+  ggplot + aes(x=hormone_therapy, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-hormone_therapy/NPI", x = "hormone_therapy", y= "survival_months")
+
+month_hormone_therapy_cluster <- bc %>%
+  ggplot + aes(x=hormone_therapy, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-hormone_therapy/cluster", x = "hormone_therapy", y= "survival")
+
+ggarrange(month_hormone_therapy_NPI, month_hormone_therapy_cluster,  
+          labels = c("NPI", "Cluster"), 
+          ncol = 2, nrow = 1, 
+          legend = "bottom")
+```
+
+<br>
+Figure 1 and Figure 2 are two sets of plots representing relations between overall survival months with her2-status and hormone therapy. The left plot in each Figure is the relation in the NPI groups, and the right one is in the integrative cluster groups. By viewing the slope differences in each group factor, we are able to decide for what group we should put this fixed variable. If the slopes in a figure have the same tendency, downward for example, the variable perfectly corresponds to this group. I compare the two groups, choose the one with more significant difference in its slope tendency, and then this variable should fix in this chosen group. Taking the above two graphs as examples, her2_status should be put in the integrative cluster group, whereas hormone therapy will be fixed in the NPI group.
+Similarly, I plot the relations of each variable with overall survival months. For detailed information, please see in the appendix. 
+<br>
+<br>
+
+## Build the Model
+```{r warning=FALSE, message=FALSE}
+model1 <- lmer( overall_survival_months ~  overall_survival + age_at_diagnosis 
+              + tumor_size + chemotherapy + cohort + her2_status + brca1 
+              + lymph_nodes_examined_positive 
+              + (1 + cohort | nottingham_prognostic_index)
+              + (age_at_diagnosis  + brca1 + chemotherapy + her2_status | 
+                   integrative_cluster), 
+              data = bc)
+
+summary(model1)
+```
+### Exam the ramdon effects
+This tables are the summary of random effects. The first one is random effect of integrative_cluster groups and the second is NPI groups.
+```{r message=FALSE, echo=FALSE}
+ranef(model1)
+```
+<br>
+<br>
+
+## Result
+### Interpretation
+By the model summary, we can write the formula: 
+$$ overall\,survival\,months = 113.70  +  63.45 \times overall\,survival - 0.63 \times age\,at\,diagonsis - 0.38 \times tumor\,size $$
+$$- 15.83 \times chemotherapy+ 17.96 \times (1+cohort) - 21.17 \times her2\,status + 5.07 \times brca1 - 1.50 \times lymph\,nodes\,examined\,positive$$
+For example, patient with id 121, 
+$$ 113.70  +  63.45 \times 1 - 0.63 \times 79 - 0.38 \times 30 - 15.83 \times 0 + 17.96 \times (1+1) - 21.16 \times 0 + 5.08 \times (-0.2284) - 1.50 \times 6$$, the answer is not exactly the same but nearly. 
+<br>
+From the formula, we can understand the influence of each variable on patients' survival duration. The overall survival has a great impact on survival duration. Because it is a binary variable, patients can be alive or dead. If one is dead, the survival duration also stops increasing. Besides, age negatively affects survival time, just like I predicted before. People’s body degeneration increases when they get older. Chemotherapy is the most surprising result. The coefficient is negative and not a small number, which means that chemotherapy may shorten survival duration. As a result, I would recommend patients take other therapy methods. At least, the BRCA1 gene indeed shortens one’s survival duration. The interception is positive, but the variables of BRCA1 are all negative. Hence, the influence on the total survival months is negative. 
+<br>
+
+### Model Checking
+
+```{r echo=FALSE, warning=FALSE, fig.height=4, fig.width=10, fig.cap='Model Checking1'}
+p1 <- Plot_Linearity <-plot(resid(model1),bc$overall_survival_months)
+
+bc$residuals <- residuals(model1)
+bc$abs_residuals <- abs(bc$residuals) 
+bc$sqr_residuals <- bc$abs_residuals ^2 
+Levene_model1 <- lm(sqr_residuals ~ patient_id, data = bc)
+anova(Levene_model1)
+```
+
+
+
+
+```{r echo=FALSE, fig.height=4, fig.width=10, fig.cap='Model Checking2'}
+residul_plot <- plot(model1)
+
+qq_plot <- qqmath(model1, id = 0.01)
+
+
+ggarrange(residul_plot, qq_plot, 
+          labels= c('residual plot', 'QQ plot'), 
+          ncol = 2, nrow = 1)
+```
+To test the assumption, I firstly plot the model residuals versus the predictor y. By seeing figure 1, I do not have enough evidence to tell the randomness between them. So I do one more step of testing the homogeneity of variance. I pick and calculate the residuals from the model and put them in a new column named residuals. Next, I create two new columns, one with the absolute value of the residuals and another with squares of absolute values, to provide a more accurate estimate. Finally, I ANOVA the squared residuals for each patient residuals. In the result, the P value is 0.02, which is smaller than 0.05. Therefore, the variance of the residuals is equal, and the assumption is met. 
+<br>
+Now, let us see two visualizations of the model. The points in the residual plot show no pattern; they are randomly dispersed. Thus, the model is appropriate. QQ plot result can also prove the model is appropriate because most points fall on the 45-degree reference line. 
+<br>
+
+## Discussion
+For what to improve, I need more careful consideration of picking variables. The current model shows a lot of factors that will shorten the survival duration. However, the more important information for patients should be the reasons that can increase their living time. My point of view is seeing different impacts of other genes. Genes express in normal and disease cells are different. After we find the gene type with the worst effect on survival duration, we can treat that gene as targeted therapy. My best wish for this experiment is to find a solution that could rapidly increase the patient’s survival duration. Therefore,  this motivates my next step in improving the model. 
+<br>
+<br>
+
+## Reference
+Breast Cancer Gene Expression Profiles (METABRIC). (2020, May 26). Kaggle. https://www.kaggle.com/datasets/raghadalharbi/breast-cancer-gene-expression-profiles-metabric
+Palmeri, M. (n.d.). Chapter 18: Testing the Assumptions of Multilevel Models. https://ademos.people.uic.edu/Chapter18.html
+R Bootcamp: Introduction to Multilevel Model and Interactions | QuantDev Methodology. (n.d.). https://quantdev.ssri.psu.edu/tutorials/r-bootcamp-introduction-multilevel-model-and-interactions
+
+\newpage
+
+## Appendix
+### Groups
+```{r}
+count(bc, nottingham_prognostic_index)
+
+count(bc,integrative_cluster)
+## count variables in each group 
+```
+
+### Relation Plot
+```{r  echo=FALSE, fig.height=9, fig.width=10, fig.cap='Relation Plot 1'}
+month_age_NPI <- bc %>% ggplot + 
+  aes(x=age_at_diagnosis, y=overall_survival_months) + 
+  geom_point(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-age/NPI", x = "age", y= "survival_months")
+
+month_age_cluster <- bc %>% ggplot + 
+  aes(x=age_at_diagnosis, y=overall_survival_months) + 
+  geom_point(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-age/cluster", x = "age", y= "survival")
+
+month_overall_survival_NPI <- bc %>%
+  ggplot + aes(x=overall_survival, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-overall_survival/NPI", x = "overall_survival", y= "survival_months")
+
+month_overall_survival_cluster <- bc %>%
+  ggplot + aes(x=overall_survival, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-overall_survival/cluster", x = "overall_survival", y= "survival")
+
+ggarrange(month_age_NPI, month_age_cluster, 
+          month_overall_survival_NPI, month_overall_survival_cluster, 
+          labels = c("NPI", "Cluster", "NPI", "Cluster"), 
+          ncol = 2, nrow = 2, 
+          legend = "bottom")
+```
+
+```{r echo=FALSE, fig.height=14, fig.width=10, fig.cap='Relation Plot 2'}
+month_mutation_NPI <- bc %>%
+  ggplot + aes(x=mutation_count, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-mutation/NPI", x = "mutation_count", y= "survival_months")
+
+month_mutation_cluster <- bc %>%
+  ggplot + aes(x=mutation_count, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-mutation/cluster", x = "mutation_count", y= "survival")
+
+month_tumor_size_NPI <- bc %>%
+  ggplot + aes(x=tumor_size, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-tumor_size/NPI", x = "tumor_size", y= "survival_months")
+
+month_tumor_size_cluster <- bc %>%
+  ggplot + aes(x=tumor_size, y=overall_survival_months) + 
+  geom_point(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-tumor_size/cluster", x = "tumor_size", y= "survival")
+
+month_lymph_nodes_NPI <- bc %>%
+  ggplot + aes(x=lymph_nodes_examined_positive, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-lymph_nodes/NPI", x = "lymph_nodes_number", y= "survival_months")
+
+month_lymph_nodes_cluster <- bc %>%
+  ggplot + aes(x=lymph_nodes_examined_positive, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-lymph_nodes/cluster", x = "lymph_nodes_number", y= "survival")
+
+ggarrange(month_mutation_NPI, month_mutation_cluster, 
+          month_tumor_size_NPI, month_tumor_size_cluster,
+          month_lymph_nodes_NPI, month_lymph_nodes_cluster,
+          labels = c("NPI", "Cluster", "NPI", "Cluster", "NPI", "Cluster"), 
+          ncol = 2, nrow = 3, 
+          legend = "bottom")
+```
+
+
+```{r echo=FALSE, fig.height=9, fig.width=10, fig.cap='Relation Plot 3'}
+month_neoplasm_grade_NPI <- bc %>%
+  ggplot + aes(x=neoplasm_histologic_grade, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-neoplasm_grade/NPI", x = "neoplasm_histologic_grade", y= "survival_months")
+
+month_neoplasm_grade_cluster <- bc %>%
+  ggplot + aes(x=neoplasm_histologic_grade, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-neoplasm_grade/cluster", x = "neoplasm_histologic_grade", y= "survival")
+
+month_brca1_NPI <- bc %>%
+  ggplot + aes(x=brca1, y=overall_survival_months) + 
+  geom_point(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-brca1/NPI", x = "brca1", y= "survival_months")
+
+month_brca1_cluster <- bc %>%
+  ggplot + aes(x=brca1, y=overall_survival_months) + 
+  geom_point(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-brca1/cluster", x = "brca1", y= "survival")
+
+ggarrange(month_neoplasm_grade_NPI, month_neoplasm_grade_cluster, 
+          month_brca1_NPI, month_brca1_cluster,
+          labels = c("NPI", "Cluster", "NPI", "Cluster"), 
+          ncol = 2, nrow = 2, 
+          legend = "bottom")
+```
+
+```{r echo=FALSE, fig.height=9, fig.width=10, fig.cap='Relation Plot 4'}
+month_er_NPI <- bc %>%
+  ggplot + aes(x=er_status, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-er_status/NPI", x = "er_status", y= "survival_months")
+
+month_er_cluster <- bc %>%
+  ggplot + aes(x=er_status, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-er_status/cluster", x = "er_status", y= "survival")
+
+month_pr_NPI <- bc %>%
+  ggplot + aes(x=pr_status, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-pr_status/NPI", x = "pr_status", y= "survival_months")
+
+month_pr_cluster <- bc %>%
+  ggplot + aes(x=pr_status, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-pr_status/cluster", x = "pr_status", y= "survival")
+
+ggarrange(month_er_NPI, month_er_cluster, 
+          month_pr_NPI, month_pr_cluster, 
+          labels = c("NPI", "Cluster", "NPI", "Cluster"), 
+          ncol = 2, nrow = 2, 
+          legend = "bottom")
+```
+
+```{r echo=FALSE, fig.height=9, fig.width=10, fig.cap='Relation Plot 5'}
+month_chemotherapy_NPI <- bc %>%
+  ggplot + aes(x=chemotherapy, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-chemotherapy/NPI", x = "chemotherapy", y= "survival_months")
+
+month_chemotherapy_cluster <- bc %>%
+  ggplot + aes(x=chemotherapy, y=overall_survival_months) + 
+geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + labs(title = "month-chemotherapy/cluster", x = "chemotherapy", y= "survival")
+
+month_cohort_NPI <- bc %>%
+  ggplot + aes(x=cohort, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(nottingham_prognostic_index)), size=0.75) + 
+  geom_smooth(aes(color = factor(nottingham_prognostic_index)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-cohort/NPI", x = "cohort", y= "survival_months")
+
+month_cohort_cluster <- bc %>%
+  ggplot + aes(x=cohort, y=overall_survival_months) + 
+  geom_jitter(aes(color = factor(integrative_cluster)), size=0.75) + 
+  geom_smooth(aes(color = factor(integrative_cluster)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "month-cohort/cluster", x = "cohort", y= "survival")
+
+ggarrange(month_chemotherapy_NPI, month_chemotherapy_cluster, 
+          month_cohort_NPI, month_cohort_cluster, 
+          labels = c("NPI", "Cluster", "NPI", "Cluster"), 
+          ncol = 2, nrow = 2, 
+          legend = "bottom")
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
